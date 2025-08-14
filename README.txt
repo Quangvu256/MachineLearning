@@ -1,6 +1,7 @@
 Phân loại 5 Lớp Chim bằng Đặc trưng Cổ điển và XGBoost
 
-Dự án này là một pipeline hoàn chỉnh để huấn luyện một mô hình học máy nhằm phân loại 5 loài chim từ bộ dữ liệu CUB-200-2011. Pipeline sử dụng các kỹ thuật trích xuất đặc trưng cổ điển (HOG, LBP, HSV), tăng cường dữ liệu và tối ưu siêu tham số với XGBoost. Trong thực nghiệm, mô hình đạt hiệu quả phân lớp 5 lớp chim ở mức 88–90% trong 10 lần thử.
+Dự án này là một pipeline hoàn chỉnh để huấn luyện một mô hình học máy nhằm phân loại 5 loài chim từ bộ dữ liệu CUB-200-2011.
+Pipeline sử dụng các kỹ thuật trích xuất đặc trưng cổ điển (HOG, LBP, HSV), tăng cường dữ liệu và tối ưu siêu tham số với XGBoost. Trong thực nghiệm, mô hình đạt hiệu quả phân lớp 5 lớp chim ở mức 88–90% trong 10 lần thử.
 
 🎯 Mục tiêu
 
