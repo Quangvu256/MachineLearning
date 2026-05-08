@@ -80,5 +80,5 @@ pytest tests/ -v
   - Resize ảnh bằng PIL để nhất quán giữa train và inference.
   - Sử dụng `StandardScaler`.
   - Fix Data Leakage bằng cách tách biệt `RandomizedSearchCV` và quá trình Early Stopping.
-  ## Link Demo:
+## Link Demo:
   http://34.135.238.121:8501/
