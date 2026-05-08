@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 # --- CẤU HÌNH ---
 # Nếu thư mục này không tồn tại hoặc thiếu metadata, script sẽ tự tải dataset về DATA_BASE_DIR
-ROOT_DIR = r'C:/Users/trong/Downloads/CUB_200_2011/CUB_200_2011'
+ROOT_DIR = os.environ.get('CUB_DATA_DIR', 'data/CUB_200_2011/CUB_200_2011')
 OUTPUT_DIR = 'CUB_200_processed'
 
 # Link và nơi lưu khi auto-download
@@ -33,7 +33,9 @@ def download_and_extract_cub(base_dir=DATA_BASE_DIR, url=DATA_URL):
 
     print("Đang giải nén...")
     with tarfile.open(tgz_path, "r:gz") as tar:
-        tar.extractall(base_dir)
+        members = tar.getmembers()
+        for member in tqdm(members, desc="Extracting"):
+            tar.extract(member, path=base_dir)
 
     extracted_root = os.path.join(base_dir, "CUB_200_2011")
     if not os.path.isdir(extracted_root):

@@ -1,31 +1,36 @@
 import os
+import random
 import numpy as np
 from PIL import Image
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score
 from sklearn.utils.class_weight import compute_sample_weight 
 import xgboost as xgb
 import json
-import cv2
-from skimage.feature import hog, local_binary_pattern
-from skimage.transform import resize
+import joblib
 import imgaug as ia
 from imgaug import augmenters as iaa
 from scipy.stats import randint, uniform
 
-# --- CẤU HÌNH ---
+from config import (
+    DEVICE, SEED, TEST_SIZE, CV_FOLDS, N_SEARCH_ITER, EARLY_STOPPING_ROUNDS,
+    MODEL_PATH, ENCODER_PATH, SCALER_PATH, PROCESSED_DATA_DIR, MODEL_DIR
+)
+from features import get_combined_features
 
-PROCESSED_DATA_DIR = 'ML'
-MODEL_FILENAME = 'xgboost_rich_features_tuned.json'
-LABEL_ENCODER_FILENAME = 'label_encoder_rich_features_tuned.json'
-IMAGE_SIZE = (128, 128)
+# Đặt seed cho reproducibility
+random.seed(SEED)
+np.random.seed(SEED)
+ia.seed(SEED)
 
+print(f"🖥️ Device: {DEVICE}")
 
+# Tạo thư mục models nếu chưa có
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-ia.seed(42)
 augmenter = iaa.Sequential([
     iaa.Fliplr(0.5),
     iaa.Affine(
@@ -38,52 +43,6 @@ augmenter = iaa.Sequential([
     iaa.LinearContrast((0.8, 1.2)),
 ], random_order=True)
 
-
-def extract_hog_features(pil_image):
-    """Trích xuất đặc trưng hình dạng (HOG)"""
-    gray_img = np.array(pil_image.convert('L'))
-    gray_img_resized = resize(gray_img, IMAGE_SIZE)
-    features = hog(gray_img_resized, pixels_per_cell=(16, 16),
-                   cells_per_block=(2, 2), visualize=False)
-    return features
-
-def extract_color_histogram(pil_image):
-    """Trích xuất đặc trưng màu sắc"""
-    img_resized = pil_image.resize(IMAGE_SIZE)
-    hsv_img = cv2.cvtColor(np.array(img_resized), cv2.COLOR_RGB2HSV)
-    hist = cv2.calcHist([hsv_img], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
-    cv2.normalize(hist, hist)
-    return hist.flatten()
-
-def extract_lbp_features(pil_image):
-    """Trích xuất đặc trưng kết cấu (LBP)"""
-    gray_img = np.array(pil_image.convert('L'))
-    gray_img_resized = resize(gray_img, IMAGE_SIZE)
-    
-    # Cài đặt cho LBP
-    radius = 3
-    n_points = 8 * radius
-    lbp = local_binary_pattern(gray_img_resized, n_points, radius, method='uniform')
-    (hist, _) = np.histogram(lbp.ravel(),
-                             bins=np.arange(0, n_points + 3),
-                             range=(0, n_points + 2))
-    # Chuẩn hóa histogram
-    hist = hist.astype("float")
-    hist /= (hist.sum() + 1e-6)
-    return hist
-
-# 1.3: Hàm tổng hợp để lấy tất cả đặc trưng
-def get_combined_features(pil_image):
-    """Gọi các hàm trích xuất và nối các vector đặc trưng lại"""
-    hog_features = extract_hog_features(pil_image)
-    color_features = extract_color_histogram(pil_image)
-    lbp_features = extract_lbp_features(pil_image)
-    
-    # Nối tất cả lại thành một vector duy nhất
-    combined = np.concatenate([hog_features, color_features, lbp_features])
-    return combined
-
-# 1.4: Hàm xử lý cho ảnh huấn luyện (Tăng cường + Trích xuất)
 def process_training_image(image_path, label):
     try:
         img = Image.open(image_path).convert('RGB')
@@ -100,7 +59,6 @@ def process_training_image(image_path, label):
         print(f"Lỗi khi xử lý ảnh huấn luyện {image_path}: {e}")
         return [], []
 
-# 1.5: Hàm xử lý cho ảnh kiểm tra (Chỉ trích xuất)
 def process_test_image(image_path):
     try:
         img = Image.open(image_path).convert('RGB')
@@ -109,8 +67,6 @@ def process_test_image(image_path):
         print(f"Lỗi khi xử lý ảnh kiểm tra {image_path}: {e}")
         return None
 
-# --- BƯỚC 2: TỐI ƯU SIÊU THAM SỐ & HUẤN LUYỆN MÔ HÌNH ---
-# Cập nhật hàm để nhận thêm sample_weights
 def tune_and_train_model(X_train, y_train, X_test, y_test, num_classes, sample_weights):
     print("\nBắt đầu quá trình tìm kiếm siêu tham số tối ưu...")
     
@@ -123,46 +79,65 @@ def tune_and_train_model(X_train, y_train, X_test, y_test, num_classes, sample_w
         'n_estimators': randint(200, 600)
     }
 
-    xgb_model = xgb.XGBClassifier(
+    # ===== BƯỚC 1: Tìm hyperparams (KHÔNG dùng early_stopping/eval_set) =====
+    xgb_search = xgb.XGBClassifier(
         objective='multi:softmax',
         num_class=num_classes,
-        device='cuda',
+        device=DEVICE,
         tree_method='hist',
         eval_metric='merror',
-        early_stopping_rounds=30 
+        random_state=SEED
     )
 
     random_search = RandomizedSearchCV(
-        xgb_model,
+        xgb_search,
         param_distributions=param_dist,
-        n_iter=30, 
+        n_iter=N_SEARCH_ITER,
         scoring='accuracy',
-        n_jobs=1, 
-        cv=3, 
+        n_jobs=1,
+        cv=CV_FOLDS,
         verbose=3,
-        random_state=42
+        random_state=SEED
     )
 
     print("Đang chạy RandomizedSearchCV...")
-    # Cập nhật lời gọi .fit() để truyền trọng số vào
-    random_search.fit(X_train, y_train, eval_set=[(X_test, y_test)], sample_weight=sample_weights, verbose=False)
+    random_search.fit(X_train, y_train, sample_weight=sample_weights)
 
     print("\nQuá trình tìm kiếm hoàn tất!")
     print("Siêu tham số tốt nhất được tìm thấy: ", random_search.best_params_)
     print(f"Độ chính xác tốt nhất trên tập validation (CV): {random_search.best_score_ * 100:.2f}%")
 
-    best_model = random_search.best_estimator_
+    # ===== BƯỚC 2: Train final model với best params + early stopping =====
+    best_params = random_search.best_params_
+    
+    final_model = xgb.XGBClassifier(
+        objective='multi:softmax',
+        num_class=num_classes,
+        device=DEVICE,
+        tree_method='hist',
+        eval_metric='merror',
+        early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+        random_state=SEED,
+        **best_params
+    )
+
+    print("\nĐang huấn luyện mô hình cuối cùng...")
+    final_model.fit(
+        X_train, y_train,
+        eval_set=[(X_test, y_test)],
+        sample_weight=sample_weights,
+        verbose=False
+    )
 
     print("\nĐánh giá mô hình tốt nhất trên tập kiểm tra...")
-    preds = best_model.predict(X_test)
+    preds = final_model.predict(X_test)
     accuracy = accuracy_score(y_test, preds)
     print(f"----------------------------------------------------")
     print(f"✅ Độ chính xác (Accuracy) cuối cùng trên tập test: {accuracy * 100:.2f}%")
     print(f"----------------------------------------------------")
     
-    return best_model
+    return final_model
 
-# --- HÀM CHÍNH ĐỂ CHẠY TOÀN BỘ PIPELINE ---
 def main():
     # 1. Quét dữ liệu
     image_paths, labels_str = [], []
@@ -191,7 +166,7 @@ def main():
     le = LabelEncoder()
     labels_encoded = le.fit_transform(labels_str)
     X_paths_train, X_paths_test, y_train, y_test = train_test_split(
-        image_paths, labels_encoded, test_size=0.25, random_state=42, stratify=labels_encoded
+        image_paths, labels_encoded, test_size=TEST_SIZE, random_state=SEED, stratify=labels_encoded
     )
 
     # 3. Xử lý tập huấn luyện
@@ -218,23 +193,31 @@ def main():
     y_test = y_test[valid_indices]
     X_test = np.array(X_test_features)
 
+    # Thêm StandardScaler
+    print("\nÁp dụng StandardScaler cho các đặc trưng...")
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+    
+    # Lưu scaler
+    print("Đang lưu StandardScaler...")
+    joblib.dump(scaler, SCALER_PATH)
+
     # 5. Tối ưu và Huấn luyện mô hình
     if len(X_train) > 0 and len(X_test) > 0:
-        # *** THÊM BƯỚC TÍNH TOÁN TRỌNG SỐ ***
         print("\nTính toán trọng số mẫu để xử lý mất cân bằng dữ liệu...")
         sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
         
-        # Cập nhật lời gọi hàm để truyền trọng số vào
         model = tune_and_train_model(X_train, y_train, X_test, y_test, len(le.classes_), sample_weights)
         
         # 6. Lưu mô hình và bộ mã hóa
         print("Đang lưu mô hình và bộ mã hóa nhãn...")
-        model.save_model(MODEL_FILENAME)
+        model.save_model(MODEL_PATH)
         classes_list = le.classes_.tolist()
-        with open(LABEL_ENCODER_FILENAME, 'w') as f:
+        with open(ENCODER_PATH, 'w') as f:
             json.dump(classes_list, f)
-        print(f"Đã lưu mô hình vào file: '{MODEL_FILENAME}'")
-        print(f"Đã lưu bộ mã hóa vào file: '{LABEL_ENCODER_FILENAME}'")
+        print(f"Đã lưu mô hình vào file: '{MODEL_PATH}'")
+        print(f"Đã lưu bộ mã hóa vào file: '{ENCODER_PATH}'")
     else:
         print("Không có dữ liệu để huấn luyện.")
 
