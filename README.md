@@ -81,4 +81,4 @@ pytest tests/ -v
   - Sử dụng `StandardScaler`.
   - Fix Data Leakage bằng cách tách biệt `RandomizedSearchCV` và quá trình Early Stopping.
 ## Link Demo:
-  http://34.135.238.121:8501/
+  http://34.61.15.228:8501/
